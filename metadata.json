@@ -1,0 +1,6 @@
+{
+  "name": "Smash Arena — Sistem Pemesanan & Manajemen Jadwal Badminton Real-Time",
+  "description": "Platform pemesanan lapangan badminton dan manajemen jadwal booking real-time dengan sinkronisasi WebSocket instan.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
