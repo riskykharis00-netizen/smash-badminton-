@@ -3,6 +3,7 @@ import {
   Check,
   Clock,
   Copy,
+  Database,
   MessageCircle,
   Minus,
   Plus,
@@ -267,6 +268,11 @@ export function LiveScheduleMatrix({
                   <span>
                     Sinkronisasi Live · <strong className="tabular-nums">{onlineCount}</strong> aktif
                   </span>
+                </>
+              ) : connectionStatus === 'local' ? (
+                <>
+                  <Database className="h-3.5 w-3.5 text-emerald-600" />
+                  <span>Mode Lokal · Sinkronisasi Antar Tab</span>
                 </>
               ) : (
                 <>

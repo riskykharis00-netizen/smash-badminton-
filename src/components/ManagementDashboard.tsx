@@ -1,5 +1,6 @@
 import {
   CheckCircle2,
+  Database,
   Eye,
   Lock,
   MessageCircle,
@@ -232,6 +233,11 @@ export function ManagementDashboard({
                   <>
                     <Wifi className="h-3.5 w-3.5 text-emerald-600" />
                     Sinkronisasi Live ({onlineCount} terhubung)
+                  </>
+                ) : connectionStatus === 'local' ? (
+                  <>
+                    <Database className="h-3.5 w-3.5 text-emerald-600" />
+                    Mode Lokal · Tersimpan di Browser
                   </>
                 ) : (
                   <>
