@@ -1,4 +1,5 @@
 import {
+  ArrowDown,
   Calendar,
   Check,
   Clock,
@@ -16,7 +17,7 @@ import {
   Wrench,
   X,
 } from 'lucide-react';
-import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import type { ConnectionStatus, CreateBookingInput } from '../hooks/useArenaRealtime';
 import { extractReadableError } from '../lib/firebase';
 import { UnauthorizedDomainNotice } from './UnauthorizedDomainNotice';
@@ -32,6 +33,7 @@ import {
   formatRupiah,
   formatSlotList,
   getTodayIsoDate,
+  isSlotPast,
   type Booking,
   type Court,
   type PaymentMethod,
@@ -95,6 +97,26 @@ export function LiveScheduleMatrix({
   const [copiedCode, setCopiedCode] = useState(false);
   const [inspectedBooking, setInspectedBooking] = useState<Booking | null>(null);
 
+  const [minuteTick, setMinuteTick] = useState(0);
+  const [isSummaryInView, setIsSummaryInView] = useState(false);
+  const summaryRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    const id = window.setInterval(() => setMinuteTick((t) => t + 1), 60_000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  useEffect(() => {
+    const el = summaryRef.current;
+    if (!el || typeof IntersectionObserver === 'undefined') return;
+    const observer = new IntersectionObserver(
+      ([entry]) => setIsSummaryInView(entry.isIntersecting),
+      { threshold: 0.15 }
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [selectedSlots.length]);
+
   const filteredCourts = useMemo(() => {
     if (selectedCourtFilter === 'all') return courts;
     return courts.filter((c) => c.id === selectedCourtFilter);
@@ -110,7 +132,11 @@ export function LiveScheduleMatrix({
       return;
     }
 
+    const now = new Date();
     const validSlots = selectedSlots.filter((hr) => {
+      if (isSlotPast(selectedDate, hr, now)) {
+        return false;
+      }
       const taken = bookings.some(
         (b) =>
           b.courtId === selectedCourtId &&
@@ -124,9 +150,9 @@ export function LiveScheduleMatrix({
     if (validSlots.length !== selectedSlots.length) {
       setSelectedSlots(validSlots);
       onSyncHold(selectedCourtId, selectedDate, validSlots);
-      setFormError('Sebagian slot yang Anda pilih baru saja dipesan pengguna lain.');
+      setFormError('Sebagian slot yang Anda pilih baru saja dipesan atau waktunya sudah lewat.');
     }
-  }, [bookings, courts, onSyncHold, selectedCourtId, selectedDate, selectedSlots]);
+  }, [bookings, courts, minuteTick, onSyncHold, selectedCourtId, selectedDate, selectedSlots]);
 
   const handleDateChange = (nextDate: string) => {
     setSelectedDate(nextDate);
@@ -137,7 +163,7 @@ export function LiveScheduleMatrix({
   };
 
   const handleToggleSlot = (court: Court, hour: number) => {
-    if (court.status === 'maintenance') return;
+    if (court.status === 'maintenance' || isSlotPast(selectedDate, hour)) return;
     setFormError(null);
 
     if (selectedCourtId !== court.id) {
@@ -393,6 +419,8 @@ export function LiveScheduleMatrix({
                 <span className="font-medium text-amber-700">Ditahan = Pengguna Lain</span>
                 <span aria-hidden="true">·</span>
                 <span className="text-slate-500">Terisi = Sudah Dibooking</span>
+                <span aria-hidden="true">·</span>
+                <span className="text-slate-400">Lewat = Waktu Berlalu</span>
               </div>
             </div>
 
@@ -438,122 +466,144 @@ export function LiveScheduleMatrix({
                   </thead>
 
                   <tbody className="divide-y divide-slate-200">
-                    {OPERATING_HOURS.map((hour) => (
-                      <tr key={hour} className="hover:bg-slate-50/40">
-                        <td className="sticky left-0 z-10 bg-white px-4 py-2 align-middle">
-                          <div className="font-mono text-xs font-semibold text-slate-800 tabular-nums whitespace-nowrap">
-                            {formatHourRange(hour)}
-                          </div>
-                          <div className="text-[11px] text-slate-400">Durasi 1 Jam</div>
-                        </td>
+                    {OPERATING_HOURS.map((hour) => {
+                      const isPast = isSlotPast(selectedDate, hour);
+                      return (
+                        <tr key={hour} className={isPast ? 'bg-slate-50/40' : 'hover:bg-slate-50/40'}>
+                          <td className="sticky left-0 z-10 bg-white px-4 py-2 align-middle">
+                            <div
+                              className={`font-mono text-xs font-semibold tabular-nums whitespace-nowrap ${
+                                isPast ? 'text-slate-400' : 'text-slate-800'
+                              }`}
+                            >
+                              {formatHourRange(hour)}
+                            </div>
+                            <div className="text-[11px] text-slate-400">
+                              {isPast ? 'Waktu Berlalu' : 'Durasi 1 Jam'}
+                            </div>
+                          </td>
 
-                        {filteredCourts.map((court) => {
-                          const booking = bookings.find(
-                            (b) =>
-                              b.courtId === court.id &&
-                              b.date === selectedDate &&
-                              b.status !== 'Dibatalkan' &&
-                              b.slots.includes(hour)
-                          );
-                          const isSelectedByMe =
-                            selectedCourtId === court.id && selectedSlots.includes(hour);
-                          const heldByOther =
-                            !isSelectedByMe &&
-                            holds.some(
-                              (h) =>
-                                h.courtId === court.id &&
-                                h.date === selectedDate &&
-                                h.hour === hour
+                          {filteredCourts.map((court) => {
+                            const booking = bookings.find(
+                              (b) =>
+                                b.courtId === court.id &&
+                                b.date === selectedDate &&
+                                b.status !== 'Dibatalkan' &&
+                                b.slots.includes(hour)
                             );
+                            const isSelectedByMe =
+                              selectedCourtId === court.id && selectedSlots.includes(hour);
+                            const heldByOther =
+                              !isSelectedByMe &&
+                              holds.some(
+                                (h) =>
+                                  h.courtId === court.id &&
+                                  h.date === selectedDate &&
+                                  h.hour === hour
+                              );
 
-                          if (court.status === 'maintenance') {
-                            return (
-                              <td
-                                key={court.id}
-                                className="border-l border-slate-200 bg-rose-50/50 p-1.5"
-                              >
-                                <div className="flex h-12 w-full items-center justify-center gap-1.5 rounded-md text-xs font-medium text-rose-700">
-                                  <Wrench className="h-3.5 w-3.5" />
-                                  <span>Perawatan</span>
-                                </div>
-                              </td>
-                            );
-                          }
-
-                          if (booking) {
-                            const isBlock = booking.kind !== 'customer';
-                            return (
-                              <td
-                                key={court.id}
-                                className={`border-l border-slate-200 p-1.5 ${
-                                  isBlock ? 'bg-rose-50/40' : 'bg-slate-50'
-                                }`}
-                              >
-                                <button
-                                  type="button"
-                                  onClick={() => setInspectedBooking(booking)}
-                                  className="flex h-12 w-full items-center justify-between gap-2 rounded-md border border-slate-200 bg-slate-100 px-3 text-left transition-colors hover:border-slate-300 cursor-pointer"
+                            if (court.status === 'maintenance') {
+                              return (
+                                <td
+                                  key={court.id}
+                                  className="border-l border-slate-200 bg-rose-50/50 p-1.5"
                                 >
-                                  <span className="truncate text-xs font-semibold text-slate-800">
-                                    {booking.customerName}
-                                  </span>
-                                  <span className="text-[11px] font-medium text-slate-500 shrink-0">
-                                    {booking.kind === 'tournament'
-                                      ? 'Turnamen'
-                                      : booking.kind === 'maintenance'
-                                      ? 'Diblokir'
-                                      : booking.status}
-                                  </span>
-                                </button>
-                              </td>
-                            );
-                          }
+                                  <div className="flex h-12 w-full items-center justify-center gap-1.5 rounded-md text-xs font-medium text-rose-700">
+                                    <Wrench className="h-3.5 w-3.5" />
+                                    <span>Perawatan</span>
+                                  </div>
+                                </td>
+                              );
+                            }
 
-                          if (isSelectedByMe) {
+                            if (booking) {
+                              const isBlock = booking.kind !== 'customer';
+                              return (
+                                <td
+                                  key={court.id}
+                                  className={`border-l border-slate-200 p-1.5 ${
+                                    isBlock ? 'bg-rose-50/40' : 'bg-slate-50'
+                                  }`}
+                                >
+                                  <button
+                                    type="button"
+                                    onClick={() => setInspectedBooking(booking)}
+                                    className="flex h-12 w-full items-center justify-between gap-2 rounded-md border border-slate-200 bg-slate-100 px-3 text-left transition-colors hover:border-slate-300 cursor-pointer"
+                                  >
+                                    <span className="truncate text-xs font-semibold text-slate-800">
+                                      {booking.customerName}
+                                    </span>
+                                    <span className="text-[11px] font-medium text-slate-500 shrink-0">
+                                      {booking.kind === 'tournament'
+                                        ? 'Turnamen'
+                                        : booking.kind === 'maintenance'
+                                        ? 'Diblokir'
+                                        : booking.status}
+                                    </span>
+                                  </button>
+                                </td>
+                              );
+                            }
+
+                            if (isPast) {
+                              return (
+                                <td
+                                  key={court.id}
+                                  className="border-l border-slate-200 bg-slate-50/70 p-1.5"
+                                >
+                                  <div className="flex h-12 w-full items-center justify-center rounded-md border border-slate-200/80 bg-slate-100/70 px-3 text-xs font-medium text-slate-400 select-none">
+                                    Sudah Lewat
+                                  </div>
+                                </td>
+                              );
+                            }
+
+                            if (isSelectedByMe) {
+                              return (
+                                <td key={court.id} className="border-l border-slate-200 p-1.5">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleToggleSlot(court, hour)}
+                                    className="flex h-12 w-full items-center justify-center gap-1.5 rounded-md bg-emerald-600 px-3 text-xs font-semibold text-white transition-colors hover:bg-emerald-700 cursor-pointer"
+                                  >
+                                    <Check className="h-4 w-4 shrink-0" />
+                                    <span>Dipilih ({formatCompactRupiah(court.hourlyPrice)})</span>
+                                  </button>
+                                </td>
+                              );
+                            }
+
+                            if (heldByOther) {
+                              return (
+                                <td key={court.id} className="border-l border-slate-200 p-1.5">
+                                  <div className="flex h-12 w-full items-center justify-center gap-1.5 rounded-md border border-amber-300 bg-amber-50 px-3 text-xs font-semibold text-amber-900">
+                                    <Clock className="h-3.5 w-3.5" />
+                                    <span>Ditahan (Proses Pesan)</span>
+                                  </div>
+                                </td>
+                              );
+                            }
+
                             return (
                               <td key={court.id} className="border-l border-slate-200 p-1.5">
                                 <button
                                   type="button"
                                   onClick={() => handleToggleSlot(court, hour)}
-                                  className="flex h-12 w-full items-center justify-center gap-1.5 rounded-md bg-emerald-600 px-3 text-xs font-semibold text-white transition-colors hover:bg-emerald-700 cursor-pointer"
+                                  className="group flex h-12 w-full items-center justify-between rounded-md border border-slate-200 bg-white px-3.5 transition-colors hover:border-emerald-600 hover:bg-emerald-50/70 cursor-pointer"
                                 >
-                                  <Check className="h-4 w-4 shrink-0" />
-                                  <span>Dipilih ({formatCompactRupiah(court.hourlyPrice)})</span>
+                                  <span className="text-xs font-semibold text-emerald-700">
+                                    Tersedia
+                                  </span>
+                                  <span className="font-mono text-xs font-semibold text-slate-900 tabular-nums group-hover:text-emerald-800">
+                                    {formatCompactRupiah(court.hourlyPrice)}
+                                  </span>
                                 </button>
                               </td>
                             );
-                          }
-
-                          if (heldByOther) {
-                            return (
-                              <td key={court.id} className="border-l border-slate-200 p-1.5">
-                                <div className="flex h-12 w-full items-center justify-center gap-1.5 rounded-md border border-amber-300 bg-amber-50 px-3 text-xs font-semibold text-amber-900">
-                                  <Clock className="h-3.5 w-3.5" />
-                                  <span>Ditahan (Proses Pesan)</span>
-                                </div>
-                              </td>
-                            );
-                          }
-
-                          return (
-                            <td key={court.id} className="border-l border-slate-200 p-1.5">
-                              <button
-                                type="button"
-                                onClick={() => handleToggleSlot(court, hour)}
-                                className="group flex h-12 w-full items-center justify-between rounded-md border border-slate-200 bg-white px-3.5 transition-colors hover:border-emerald-600 hover:bg-emerald-50/70 cursor-pointer"
-                              >
-                                <span className="text-xs font-semibold text-emerald-700">
-                                  Tersedia
-                                </span>
-                                <span className="font-mono text-xs font-semibold text-slate-900 tabular-nums group-hover:text-emerald-800">
-                                  {formatCompactRupiah(court.hourlyPrice)}
-                                </span>
-                              </button>
-                            </td>
-                          );
-                        })}
-                      </tr>
-                    ))}
+                          })}
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -561,7 +611,11 @@ export function LiveScheduleMatrix({
           </div>
 
           {/* Booking Summary & Form Panel */}
-          <aside className="rounded-xl border border-slate-200 bg-white p-6 lg:sticky lg:top-20 lg:col-span-4">
+          <aside
+            ref={summaryRef}
+            id="ringkasan-pemesanan"
+            className="scroll-mt-20 rounded-xl border border-slate-200 bg-white p-6 lg:sticky lg:top-20 lg:col-span-4"
+          >
             <div className="flex items-center justify-between border-b border-slate-200 pb-4">
               <div>
                 <h3 className="font-display text-2xl font-bold tracking-tight text-slate-900">
@@ -1052,6 +1106,54 @@ export function LiveScheduleMatrix({
           </div>
         </div>
       )}
+
+      {/* Floating Mobile Summary Bar */}
+      {selectedSlots.length > 0 &&
+        selectedCourt &&
+        !isSummaryInView &&
+        !confirmedBooking &&
+        !inspectedBooking && (
+          <div className="fixed inset-x-0 bottom-0 z-40 border-t border-slate-200 bg-white/95 px-4 py-3 shadow-[0_-8px_24px_rgba(15,23,42,0.08)] backdrop-blur-sm lg:hidden">
+            <div className="mx-auto flex max-w-lg items-center justify-between gap-3">
+              <div className="min-w-0">
+                <p className="truncate text-xs font-semibold text-slate-900">
+                  {selectedCourt.name} · {selectedSlots.length} jam (
+                  <span className="font-mono text-emerald-700 tabular-nums">
+                    {formatSlotList(selectedSlots)}
+                  </span>
+                  )
+                </p>
+                <p className="font-mono text-sm font-bold text-slate-900 tabular-nums">
+                  {formatRupiah(totalAmount)}
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  aria-label="Reset pilihan slot"
+                  onClick={handleClearSelection}
+                  className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-300 bg-white text-slate-600 hover:bg-slate-50 cursor-pointer"
+                >
+                  <Trash2 className="h-4 w-4" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    summaryRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                    window.setTimeout(() => {
+                      document.getElementById('booking-name')?.focus();
+                    }, 350);
+                  }}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-4 py-2.5 text-xs font-semibold text-white hover:bg-emerald-700 cursor-pointer whitespace-nowrap"
+                >
+                  <span>Isi Data Pemesan</span>
+                  <ArrowDown className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
     </section>
   );
 }

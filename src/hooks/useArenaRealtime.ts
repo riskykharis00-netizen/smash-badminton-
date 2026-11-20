@@ -27,6 +27,7 @@ import {
 import {
   ADDON_CATALOG,
   OPERATING_HOURS,
+  isSlotPast,
   type Booking,
   type BookingAddon,
   type BookingKind,
@@ -494,6 +495,11 @@ export function useArenaRealtime() {
 
       if (normalizedSlots.length === 0) {
         throw new Error('Slot jam yang dipilih tidak valid.');
+      }
+
+      const isAdminCaller = isAdminEmail(user.email) || isRegistryAdmin;
+      if (!isAdminCaller && normalizedSlots.some((hr) => isSlotPast(input.date, hr))) {
+        throw new Error('Sebagian jam yang dipilih sudah lewat. Silakan pilih jam berikutnya.');
       }
 
       const conflict = bookings.find(

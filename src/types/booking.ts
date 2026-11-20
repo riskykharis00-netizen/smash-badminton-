@@ -153,12 +153,48 @@ export function formatSlotList(slots: number[]): string {
   return ranges.join(', ');
 }
 
-export function getTodayIsoDate(): string {
-  const now = new Date();
+export function getCurrentWibDateAndHour(now: Date = new Date()): {
+  dateIso: string;
+  hour: number;
+} {
+  try {
+    const formatter = new Intl.DateTimeFormat('en-GB', {
+      timeZone: 'Asia/Jakarta',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      hour12: false,
+    });
+    const parts = formatter.formatToParts(now);
+    const get = (type: string) => parts.find((p) => p.type === type)?.value || '';
+    const year = get('year');
+    const month = get('month');
+    const day = get('day');
+    const rawHour = Number(get('hour'));
+    const hour = rawHour === 24 ? 0 : rawHour;
+    if (year && month && day && Number.isFinite(hour)) {
+      return { dateIso: `${year}-${month}-${day}`, hour };
+    }
+  } catch {
+    // Fallback to local clock if Intl timeZone is unavailable
+  }
+
   const year = now.getFullYear();
   const month = String(now.getMonth() + 1).padStart(2, '0');
   const day = String(now.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
+  return { dateIso: `${year}-${month}-${day}`, hour: now.getHours() };
+}
+
+export function getTodayIsoDate(): string {
+  return getCurrentWibDateAndHour().dateIso;
+}
+
+export function isSlotPast(isoDate: string, hour: number, now: Date = new Date()): boolean {
+  const wib = getCurrentWibDateAndHour(now);
+  if (isoDate < wib.dateIso) return true;
+  if (isoDate > wib.dateIso) return false;
+  return hour <= wib.hour;
 }
 
 export function addDaysIsoDate(baseIso: string, delta: number): string {

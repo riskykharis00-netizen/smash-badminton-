@@ -13,7 +13,7 @@ import { ManagementDashboard } from './components/ManagementDashboard';
 import { ManagementPasscodeModal } from './components/ManagementPasscodeModal';
 import { Navbar, type WorkspaceMode } from './components/Navbar';
 import { useArenaRealtime } from './hooks/useArenaRealtime';
-import { OPERATING_HOURS, getTodayIsoDate } from './types/booking';
+import { OPERATING_HOURS, getTodayIsoDate, isSlotPast } from './types/booking';
 
 export default function App() {
   const {
@@ -43,7 +43,14 @@ export default function App() {
   const [lookupOpen, setLookupOpen] = useState(false);
   const [passcodeModalOpen, setPasscodeModalOpen] = useState(false);
 
-  const todayIso = useMemo(() => getTodayIsoDate(), []);
+  const [minuteTick, setMinuteTick] = useState(0);
+
+  useEffect(() => {
+    const id = window.setInterval(() => setMinuteTick((t) => t + 1), 60_000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  const todayIso = useMemo(() => getTodayIsoDate(), [minuteTick]);
 
   // Automatically exit management view if session token is cleared/expired
   useEffect(() => {
@@ -58,19 +65,25 @@ export default function App() {
   );
 
   const availableTodayCount = useMemo(() => {
+    const now = new Date();
+    const upcomingHours = OPERATING_HOURS.filter((hr) => !isSlotPast(todayIso, hr, now));
+    const upcomingSet = new Set(upcomingHours);
     const activeCourts = courts.filter((c) => c.status === 'active');
-    const totalPossible = activeCourts.length * OPERATING_HOURS.length;
+    const totalPossible = activeCourts.length * upcomingHours.length;
     const activeCourtIds = new Set(activeCourts.map((c) => c.id));
-    const bookedToday = bookings
+    const bookedUpcoming = bookings
       .filter(
         (b) =>
           b.date === todayIso &&
           b.status !== 'Dibatalkan' &&
           activeCourtIds.has(b.courtId)
       )
-      .reduce((sum, b) => sum + b.slots.length, 0);
-    return Math.max(0, totalPossible - bookedToday);
-  }, [bookings, courts, todayIso]);
+      .reduce(
+        (sum, b) => sum + b.slots.filter((hr) => upcomingSet.has(hr)).length,
+        0
+      );
+    return Math.max(0, totalPossible - bookedUpcoming);
+  }, [bookings, courts, minuteTick, todayIso]);
 
   const handleNavigate = (targetMode: WorkspaceMode, sectionId?: string) => {
     if (targetMode === 'management' && !isManagementUnlocked) {
