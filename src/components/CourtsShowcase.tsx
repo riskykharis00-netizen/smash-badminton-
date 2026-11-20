@@ -40,7 +40,7 @@ export function CourtsShowcase({ courts, onSelectCourtFilter }: CourtsShowcasePr
             <div className="relative h-64 w-full overflow-hidden bg-slate-900 sm:h-72">
               {!imgErrors.keramik ? (
                 <img
-                  src="/src/assets/images/court_keramik_1795043294100.jpg"
+                  src="./src/assets/images/court_keramik_1795043294100.jpg"
                   alt="Lapangan badminton indoor berlantai keramik bersih dan terang di Manisrejo Magetan"
                   referrerPolicy="no-referrer"
                   onError={() => markImgError('keramik')}
@@ -99,7 +99,7 @@ export function CourtsShowcase({ courts, onSelectCourtFilter }: CourtsShowcasePr
             <div className="relative h-52 w-full overflow-hidden bg-slate-900">
               {!imgErrors.proshop ? (
                 <img
-                  src="/src/assets/images/pro_shop_shuttle_1795042788324.jpg"
+                  src="./src/assets/images/pro_shop_shuttle_1795042788324.jpg"
                   alt="Raket badminton dan shuttlecock siap pakai di Smash Arena"
                   referrerPolicy="no-referrer"
                   onError={() => markImgError('proshop')}

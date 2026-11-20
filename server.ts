@@ -26,7 +26,21 @@ import {
   buildSeedBookings,
 } from './src/data/defaultArenaData.ts';
 
-const PORT = Number(process.env.PORT || 3000);
+function resolvePort(): number {
+  const portArgIndex = process.argv.indexOf('--port');
+  if (portArgIndex !== -1 && process.argv[portArgIndex + 1]) {
+    const cliPort = Number(process.argv[portArgIndex + 1]);
+    if (Number.isFinite(cliPort) && cliPort > 0) {
+      return cliPort;
+    }
+  }
+  if (process.env.NODE_ENV === 'production') {
+    return Number(process.env.PORT || 3000);
+  }
+  return 3000;
+}
+
+const PORT = resolvePort();
 const DATA_DIR = path.resolve(process.cwd(), 'data');
 const DB_FILE = path.join(DATA_DIR, 'arena-state.json');
 const MANAGEMENT_PASSCODE = process.env.MANAGEMENT_PASSCODE || '00000';

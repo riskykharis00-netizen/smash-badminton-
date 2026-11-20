@@ -1,0 +1,109 @@
+{
+  "entities": {
+    "Court": {
+      "title": "Court",
+      "description": "Badminton court configuration, surface type, status, and hourly tariff.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 2, "maxLength": 40, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 2, "maxLength": 60 },
+        "code": { "type": "string", "minLength": 1, "maxLength": 10 },
+        "category": { "type": "string", "enum": ["keramik"] },
+        "categoryLabel": { "type": "string", "minLength": 2, "maxLength": 60 },
+        "surface": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "lighting": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "status": { "type": "string", "enum": ["active", "maintenance"] },
+        "hourlyPrice": { "type": "integer" },
+        "imageUrl": { "type": "string", "minLength": 2, "maxLength": 300 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "name", "code", "category", "categoryLabel", "surface", "lighting", "status", "hourlyPrice", "imageUrl", "updatedAt"]
+    },
+    "Booking": {
+      "title": "Booking",
+      "description": "Public court schedule reservation record without PII.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 2, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "bookingCode": { "type": "string", "minLength": 4, "maxLength": 20, "pattern": "^SM-[A-Z0-9]{4,12}$" },
+        "courtId": { "type": "string", "enum": ["court-a", "court-b"] },
+        "date": { "type": "string", "minLength": 10, "maxLength": 10, "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
+        "slots": { "type": "array" },
+        "displayName": { "type": "string", "minLength": 2, "maxLength": 80 },
+        "paymentMethod": { "type": "string", "enum": ["Bayar di Kasir"] },
+        "status": { "type": "string", "enum": ["Menunggu", "Lunas", "Check-In", "Selesai", "Dibatalkan"] },
+        "kind": { "type": "string", "enum": ["customer", "tournament", "maintenance"] },
+        "addons": { "type": "array" },
+        "subtotal": { "type": "integer" },
+        "totalAmount": { "type": "integer" },
+        "notes": { "type": "string", "maxLength": 200 },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "bookingCode", "courtId", "date", "slots", "displayName", "paymentMethod", "status", "kind", "addons", "subtotal", "totalAmount", "ownerUid", "createdAt", "updatedAt"]
+    },
+    "BookingContact": {
+      "title": "BookingContact",
+      "description": "Private PII contact information isolated from public schedule bookings.",
+      "type": "object",
+      "properties": {
+        "bookingId": { "type": "string", "minLength": 2, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "bookingCode": { "type": "string", "minLength": 4, "maxLength": 20, "pattern": "^SM-[A-Z0-9]{4,12}$" },
+        "customerName": { "type": "string", "minLength": 2, "maxLength": 80 },
+        "customerPhone": { "type": "string", "minLength": 1, "maxLength": 30 },
+        "customerEmail": { "type": "string", "maxLength": 120 },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["bookingId", "bookingCode", "customerName", "customerPhone", "ownerUid", "createdAt"]
+    },
+    "SlotHold": {
+      "title": "SlotHold",
+      "description": "Temporary active slot hold while a verified user is completing booking.",
+      "type": "object",
+      "properties": {
+        "courtId": { "type": "string", "enum": ["court-a", "court-b"] },
+        "date": { "type": "string", "minLength": 10, "maxLength": 10, "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
+        "hour": { "type": "integer" },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "expiresAt": { "type": "integer" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["courtId", "date", "hour", "ownerUid", "expiresAt", "updatedAt"]
+    },
+    "AdminUser": {
+      "title": "AdminUser",
+      "description": "Explicitly authorized venue manager UID registry.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "email": { "type": "string", "minLength": 3, "maxLength": 120 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/courts/{courtId}": {
+      "schema": { "$ref": "#/entities/Court" },
+      "description": "Public court catalog and live maintenance/tariff state."
+    },
+    "/bookings/{bookingId}": {
+      "schema": { "$ref": "#/entities/Booking" },
+      "description": "Public court booking schedule slots without phone/email PII."
+    },
+    "/booking_contacts/{bookingId}": {
+      "schema": { "$ref": "#/entities/BookingContact" },
+      "description": "Private customer phone and email PII readable only by booking owner or venue admin."
+    },
+    "/holds/{holdId}": {
+      "schema": { "$ref": "#/entities/SlotHold" },
+      "description": "Temporary slot lock documents per court-date-hour."
+    },
+    "/admins/{uid}": {
+      "schema": { "$ref": "#/entities/AdminUser" },
+      "description": "Venue administrator role registry."
+    }
+  }
+}

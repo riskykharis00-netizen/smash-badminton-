@@ -19,7 +19,7 @@ export function buildDefaultCourts(): Court[] {
       lighting: 'Lampu LED Terang · Net Standar',
       status: 'active',
       hourlyPrice: 15000,
-      imageUrl: '/src/assets/images/court_keramik_1795043294100.jpg',
+      imageUrl: './src/assets/images/court_keramik_1795043294100.jpg',
     },
     {
       id: 'court-b',
@@ -31,7 +31,7 @@ export function buildDefaultCourts(): Court[] {
       lighting: 'Lampu LED Terang · Net Standar',
       status: 'active',
       hourlyPrice: 15000,
-      imageUrl: '/src/assets/images/court_keramik_1795043294100.jpg',
+      imageUrl: './src/assets/images/court_keramik_1795043294100.jpg',
     },
   ];
 }

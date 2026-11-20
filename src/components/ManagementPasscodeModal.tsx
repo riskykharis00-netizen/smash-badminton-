@@ -5,12 +5,14 @@ interface ManagementPasscodeModalProps {
   open: boolean;
   onClose: () => void;
   onUnlock: (passcode: string) => Promise<void>;
+  authUserEmail?: string | null;
 }
 
 export function ManagementPasscodeModal({
   open,
   onClose,
   onUnlock,
+  authUserEmail,
 }: ManagementPasscodeModalProps) {
   const [passcode, setPasscode] = useState('');
   const [showPasscode, setShowPasscode] = useState(false);
@@ -78,9 +80,15 @@ export function ManagementPasscodeModal({
         </div>
 
         <p className="mt-4 text-xs leading-relaxed text-slate-600">
-          Masukkan sandi pengelola untuk membuka halaman Manajemen Jadwal Real-Time, mengubah
-          status transaksi, atau mengatur tarif lapangan.
+          Masukkan sandi pengelola untuk membuka Manajemen Jadwal Real-Time. Jika belum masuk, Anda
+          akan diminta masuk dengan akun Google pengelola.
         </p>
+
+        {authUserEmail && (
+          <p className="mt-2 rounded-lg bg-slate-50 px-3 py-2 text-[11px] text-slate-600">
+            Akun aktif: <span className="font-semibold text-slate-900">{authUserEmail}</span>
+          </p>
+        )}
 
         <form onSubmit={handleSubmit} className="mt-5 space-y-4">
           <div>

@@ -71,7 +71,7 @@ export function HeroSection({
             <div className="relative h-72 w-full overflow-hidden rounded-xl border border-slate-200 bg-slate-900 sm:h-96 lg:h-full lg:min-h-[420px]">
               {!imgError ? (
                 <img
-                  src="/src/assets/images/court_keramik_1795043294100.jpg"
+                  src="./src/assets/images/court_keramik_1795043294100.jpg"
                   alt="Interior Lapangan A dan Lapangan B Smash Arena berlantai keramik bersih dan rata"
                   referrerPolicy="no-referrer"
                   onError={() => setImgError(true)}

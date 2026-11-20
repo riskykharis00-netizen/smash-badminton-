@@ -1,9 +1,28 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { onAuthStateChanged, signInWithPopup, signOut, type User } from 'firebase/auth';
 import {
-  DB_SCHEMA_VERSION,
-  buildDefaultCourts,
-  buildSeedBookings,
-} from '../data/defaultArenaData';
+  Timestamp,
+  collection,
+  doc,
+  getDoc,
+  onSnapshot,
+  query,
+  serverTimestamp,
+  setDoc,
+  updateDoc,
+  where,
+  writeBatch,
+} from 'firebase/firestore';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { buildDefaultCourts } from '../data/defaultArenaData';
+import {
+  ADMIN_EMAIL,
+  OperationType,
+  auth,
+  db,
+  googleProvider,
+  handleFirestoreError,
+  isAdminEmail,
+} from '../lib/firebase';
 import {
   ADDON_CATALOG,
   OPERATING_HOURS,
@@ -15,10 +34,9 @@ import {
   type CourtStatus,
   type PaymentMethod,
   type SlotHold,
-  type WsServerMessage,
 } from '../types/booking';
 
-export type ConnectionStatus = 'connecting' | 'connected' | 'reconnecting' | 'local';
+export type ConnectionStatus = 'connecting' | 'connected' | 'reconnecting' | 'local' | 'cloud';
 
 export interface CreateBookingInput {
   courtId: string;
@@ -34,61 +52,62 @@ export interface CreateBookingInput {
   status?: BookingStatus;
 }
 
-const LOCAL_DB_KEY = `smash_arena_local_db_v${DB_SCHEMA_VERSION}`;
-const LOCAL_PASSCODE = '00000';
-const LOCAL_TOKEN = 'local-mgmt-00000';
+const MANAGEMENT_PASSCODE = '00000';
+const MGMT_SESSION_KEY = 'smash_mgmt_unlocked';
 
-interface LocalDbState {
-  version: number;
-  courts: Court[];
-  bookings: Booking[];
+interface PublicBookingDoc {
+  id: string;
+  bookingCode: string;
+  courtId: string;
+  date: string;
+  slots: number[];
+  displayName: string;
+  paymentMethod: PaymentMethod;
+  status: BookingStatus;
+  kind: BookingKind;
+  addons: BookingAddon[];
+  subtotal: number;
+  totalAmount: number;
+  notes?: string;
+  ownerUid: string;
+  createdAt?: Timestamp | string;
+  updatedAt?: Timestamp | string;
 }
 
-function loadLocalDb(): LocalDbState {
-  try {
-    const raw = localStorage.getItem(LOCAL_DB_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw) as LocalDbState;
-      if (
-        parsed.version === DB_SCHEMA_VERSION &&
-        Array.isArray(parsed.courts) &&
-        Array.isArray(parsed.bookings)
-      ) {
-        return parsed;
-      }
-    }
-  } catch {
-    // Fallback to seed
-  }
-  const courts = buildDefaultCourts();
-  const bookings = buildSeedBookings(courts);
-  const initial: LocalDbState = { version: DB_SCHEMA_VERSION, courts, bookings };
-  saveLocalDb(initial);
-  return initial;
+interface BookingContactDoc {
+  bookingId: string;
+  bookingCode: string;
+  customerName: string;
+  customerPhone: string;
+  customerEmail?: string;
+  ownerUid: string;
 }
 
-function saveLocalDb(state: LocalDbState) {
-  try {
-    localStorage.setItem(LOCAL_DB_KEY, JSON.stringify(state));
-  } catch {
-    // Ignore storage quota errors
-  }
+interface HoldDoc {
+  courtId: string;
+  date: string;
+  hour: number;
+  ownerUid: string;
+  expiresAt: number;
 }
 
-async function parseJsonResponse<T>(res: Response): Promise<{ isJson: boolean; data: T | null }> {
-  const contentType = res.headers.get('content-type') || '';
-  const text = await res.text();
-  if (!contentType.includes('application/json') && !text.trim().startsWith('{') && !text.trim().startsWith('[')) {
-    return { isJson: false, data: null };
-  }
-  try {
-    return { isJson: true, data: JSON.parse(text) as T };
-  } catch {
-    return { isJson: false, data: null };
-  }
+function toIsoString(val: Timestamp | string | undefined): string {
+  if (!val) return new Date().toISOString();
+  if (typeof val === 'string') return val;
+  if (typeof val.toDate === 'function') return val.toDate().toISOString();
+  return new Date().toISOString();
 }
 
-function generateLocalBookingCode(): string {
+function generateBookingId(): string {
+  const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+  let suffix = '';
+  for (let i = 0; i < 10; i++) {
+    suffix += chars[Math.floor(Math.random() * chars.length)];
+  }
+  return `bk-${suffix}`;
+}
+
+function generateBookingCode(): string {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   let suffix = '';
   for (let i = 0; i < 4; i++) {
@@ -99,307 +118,370 @@ function generateLocalBookingCode(): string {
 
 export function useArenaRealtime() {
   const [courts, setCourts] = useState<Court[]>(() => buildDefaultCourts());
-  const [bookings, setBookings] = useState<Booking[]>([]);
-  const [holds, setHolds] = useState<SlotHold[]>([]);
-  const [onlineCount, setOnlineCount] = useState<number>(1);
-  const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('connecting');
+  const [publicBookings, setPublicBookings] = useState<PublicBookingDoc[]>([]);
+  const [contactMap, setContactMap] = useState<Map<string, BookingContactDoc>>(() => new Map());
+  const [rawHolds, setRawHolds] = useState<Array<{ id: string; data: HoldDoc }>>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('connecting');
   const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
-  const [backendMode, setBackendMode] = useState<'unknown' | 'server' | 'local'>('unknown');
-  const [managementToken, setManagementToken] = useState<string | null>(() => {
+  const [onlineCount] = useState<number>(1);
+
+  const [authUser, setAuthUser] = useState<User | null>(null);
+  const [isAuthReady, setIsAuthReady] = useState<boolean>(false);
+  const [isRegistryAdmin, setIsRegistryAdmin] = useState<boolean>(false);
+
+  const [managementUnlocked, setManagementUnlocked] = useState<boolean>(() => {
     try {
-      return sessionStorage.getItem('smash_mgmt_token');
+      return sessionStorage.getItem(MGMT_SESSION_KEY) === 'true';
     } catch {
-      return null;
+      return false;
     }
   });
 
-  const wsRef = useRef<WebSocket | null>(null);
-  const bcRef = useRef<BroadcastChannel | null>(null);
-  const reconnectTimerRef = useRef<number | null>(null);
-  const retryAttemptRef = useRef<number>(0);
-  const pendingHoldRef = useRef<{ courtId: string; date: string; slots: number[] } | null>(null);
-  const unmountedRef = useRef<boolean>(false);
+  const hasSeededCourtsRef = useRef<boolean>(false);
+  const myHoldIdsRef = useRef<string[]>([]);
 
-  const activateLocalMode = useCallback(() => {
-    const localState = loadLocalDb();
-    setCourts(localState.courts);
-    setBookings(localState.bookings);
-    setHolds([]);
-    setOnlineCount(1);
-    setBackendMode('local');
-    setConnectionStatus('local');
-    setLastSyncedAt(new Date().toISOString());
-    setIsLoading(false);
-  }, []);
+  const isAdminUser = useMemo(() => {
+    if (!authUser) return false;
+    return isAdminEmail(authUser.email) || isRegistryAdmin;
+  }, [authUser, isRegistryAdmin]);
 
-  const broadcastLocalSync = useCallback((state: LocalDbState) => {
-    saveLocalDb(state);
-    if (bcRef.current) {
-      bcRef.current.postMessage({ type: 'local:sync', payload: state });
-    }
-  }, []);
-
-  const fetchInitialState = useCallback(async (): Promise<boolean> => {
+  const signInWithGoogle = useCallback(async (): Promise<User> => {
     try {
-      const res = await fetch('/api/state');
-      const { isJson, data } = await parseJsonResponse<{
-        courts?: Court[];
-        bookings?: Booking[];
-        holds?: SlotHold[];
-        onlineCount?: number;
-      }>(res);
-
-      if (!res.ok || !isJson || !data || !Array.isArray(data.courts)) {
-        activateLocalMode();
-        return false;
+      const result = await signInWithPopup(auth, googleProvider);
+      return result.user;
+    } catch (err) {
+      const code = (err as { code?: string })?.code || '';
+      if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
+        throw new Error('Masuk Google dibatalkan. Silakan coba lagi untuk melanjutkan.');
       }
-
-      setCourts(data.courts);
-      setBookings(data.bookings ?? []);
-      setHolds(data.holds ?? []);
-      if (typeof data.onlineCount === 'number') {
-        setOnlineCount(data.onlineCount);
+      if (code === 'auth/unauthorized-domain') {
+        throw new Error(
+          'Domain ini belum diizinkan di Firebase Authentication -> Authorized domains.'
+        );
       }
-      setBackendMode('server');
-      setLastSyncedAt(new Date().toISOString());
-      setIsLoading(false);
-      return true;
-    } catch {
-      activateLocalMode();
-      return false;
-    }
-  }, [activateLocalMode]);
-
-  const connectWs = useCallback(() => {
-    if (unmountedRef.current) return;
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/ws`;
-
-    try {
-      const socket = new WebSocket(wsUrl);
-      wsRef.current = socket;
-
-      socket.onopen = () => {
-        retryAttemptRef.current = 0;
-        setBackendMode('server');
-        setConnectionStatus('connected');
-        if (pendingHoldRef.current) {
-          socket.send(JSON.stringify({ type: 'hold:sync', payload: pendingHoldRef.current }));
-        }
-      };
-
-      socket.onmessage = (event) => {
-        try {
-          const msg = JSON.parse(event.data) as WsServerMessage;
-          setLastSyncedAt(new Date().toISOString());
-
-          switch (msg.type) {
-            case 'init':
-              setCourts(msg.payload.courts);
-              setBookings(msg.payload.bookings);
-              setHolds(msg.payload.holds);
-              setOnlineCount(msg.payload.onlineCount);
-              setIsLoading(false);
-              break;
-
-            case 'booking:created':
-              setBookings((prev) => {
-                if (prev.some((b) => b.id === msg.payload.id)) {
-                  return prev;
-                }
-                return [msg.payload, ...prev];
-              });
-              break;
-
-            case 'booking:updated':
-              setBookings((prev) =>
-                prev.map((b) => (b.id === msg.payload.id ? msg.payload : b))
-              );
-              break;
-
-            case 'booking:deleted':
-              setBookings((prev) => prev.filter((b) => b.id !== msg.payload.id));
-              break;
-
-            case 'court:updated':
-              setCourts((prev) =>
-                prev.map((c) => (c.id === msg.payload.id ? msg.payload : c))
-              );
-              break;
-
-            case 'holds:updated':
-              setHolds(msg.payload);
-              break;
-
-            case 'presence:update':
-              setOnlineCount(msg.payload.onlineCount);
-              break;
-          }
-        } catch {
-          // Ignore invalid JSON
-        }
-      };
-
-      socket.onclose = () => {
-        if (unmountedRef.current) return;
-        setBackendMode((current) => {
-          if (current === 'local') {
-            setConnectionStatus('local');
-            return 'local';
-          }
-          setConnectionStatus('reconnecting');
-          const delay = Math.min(1000 * Math.pow(1.5, retryAttemptRef.current), 8000);
-          retryAttemptRef.current += 1;
-          reconnectTimerRef.current = window.setTimeout(() => {
-            connectWs();
-          }, delay);
-          return current;
-        });
-      };
-
-      socket.onerror = () => {
-        socket.close();
-      };
-    } catch {
-      activateLocalMode();
-    }
-  }, [activateLocalMode]);
-
-  useEffect(() => {
-    unmountedRef.current = false;
-
-    if (typeof BroadcastChannel !== 'undefined') {
-      const bc = new BroadcastChannel('smash_arena_sync');
-      bcRef.current = bc;
-      bc.onmessage = (event) => {
-        const msg = event.data as { type?: string; payload?: LocalDbState };
-        if (msg?.type === 'local:sync' && msg.payload) {
-          setCourts(msg.payload.courts);
-          setBookings(msg.payload.bookings);
-          setLastSyncedAt(new Date().toISOString());
-        }
-      };
-    }
-
-    fetchInitialState().then((hasServer) => {
-      if (hasServer && !unmountedRef.current) {
-        connectWs();
-      }
-    });
-
-    return () => {
-      unmountedRef.current = true;
-      if (reconnectTimerRef.current !== null) {
-        clearTimeout(reconnectTimerRef.current);
-      }
-      if (wsRef.current) {
-        wsRef.current.close();
-      }
-      if (bcRef.current) {
-        bcRef.current.close();
-      }
-    };
-  }, [connectWs, fetchInitialState]);
-
-  const syncHold = useCallback((courtId: string, date: string, slots: number[]) => {
-    const payload = { courtId, date, slots };
-    pendingHoldRef.current = payload;
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: 'hold:sync', payload }));
+      throw new Error('Gagal masuk dengan akun Google. Periksa koneksi atau izinkan pop-up browser.');
     }
   }, []);
 
-  const unlockManagement = useCallback(async (passcode: string): Promise<void> => {
-    const cleaned = passcode.trim();
-
-    if (backendMode !== 'local') {
-      try {
-        const res = await fetch('/api/management/auth', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ passcode: cleaned }),
-        });
-        const { isJson, data } = await parseJsonResponse<{
-          ok?: boolean;
-          token?: string;
-          error?: string;
-        }>(res);
-
-        if (isJson && data) {
-          if (!res.ok || !data.token) {
-            throw new Error(data.error || 'Sandi salah. Silakan coba kembali.');
-          }
-          try {
-            sessionStorage.setItem('smash_mgmt_token', data.token);
-          } catch {
-            // Ignore storage errors
-          }
-          setManagementToken(data.token);
-          return;
-        }
-      } catch (err) {
-        // Re-throw real auth rejection (wrong password); only fall back on network/non-JSON static host
-        if (err instanceof Error && err.message.toLowerCase().includes('sandi')) {
-          throw err;
-        }
-      }
-    }
-
-    // Static hosting (Vercel) fallback verification
-    if (cleaned !== LOCAL_PASSCODE) {
-      throw new Error('Sandi salah. Silakan coba kembali.');
-    }
+  const signOutUser = useCallback(async (): Promise<void> => {
+    await signOut(auth);
     try {
-      sessionStorage.setItem('smash_mgmt_token', LOCAL_TOKEN);
-    } catch {
-      // Ignore storage errors
-    }
-    setManagementToken(LOCAL_TOKEN);
-  }, [backendMode]);
-
-  const lockManagement = useCallback(() => {
-    try {
-      sessionStorage.removeItem('smash_mgmt_token');
+      sessionStorage.removeItem(MGMT_SESSION_KEY);
     } catch {
       // Ignore storage failures
     }
-    setManagementToken(null);
+    setManagementUnlocked(false);
+    setContactMap(new Map());
+  }, []);
+
+  // Auth listener
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, async (user) => {
+      setAuthUser(user);
+      if (user && !isAdminEmail(user.email)) {
+        try {
+          const adminSnap = await getDoc(doc(db, 'admins', user.uid));
+          setIsRegistryAdmin(adminSnap.exists());
+        } catch {
+          setIsRegistryAdmin(false);
+        }
+      } else {
+        setIsRegistryAdmin(false);
+      }
+      setIsAuthReady(true);
+    });
+    return () => unsub();
+  }, []);
+
+  // Auto-lock management if user signs out or switches away from admin
+  useEffect(() => {
+    if (isAuthReady && managementUnlocked && !isAdminUser) {
+      setManagementUnlocked(false);
+      try {
+        sessionStorage.removeItem(MGMT_SESSION_KEY);
+      } catch {
+        // Ignore
+      }
+    }
+  }, [isAdminUser, isAuthReady, managementUnlocked]);
+
+  // Public Courts real-time listener + auto-seed for admin if collection is empty
+  useEffect(() => {
+    const courtsQuery = query(collection(db, 'courts'), where('id', 'in', ['court-a', 'court-b']));
+    const unsub = onSnapshot(
+      courtsQuery,
+      (snapshot) => {
+        setConnectionStatus('cloud');
+        setLastSyncedAt(new Date().toISOString());
+
+        if (snapshot.empty) {
+          const defaults = buildDefaultCourts();
+          setCourts(defaults);
+          if (isAdminUser && !hasSeededCourtsRef.current) {
+            hasSeededCourtsRef.current = true;
+            const batch = writeBatch(db);
+            for (const c of defaults) {
+              batch.set(doc(db, 'courts', c.id), {
+                ...c,
+                updatedAt: serverTimestamp(),
+              });
+            }
+            void batch.commit().catch((err) => {
+              hasSeededCourtsRef.current = false;
+              console.error('Seed courts error:', err);
+            });
+          }
+          return;
+        }
+
+        const loaded = snapshot.docs
+          .map((d) => {
+            const data = d.data() as Court;
+            return {
+              id: data.id || d.id,
+              name: data.name,
+              code: data.code,
+              category: data.category,
+              categoryLabel: data.categoryLabel,
+              surface: data.surface,
+              lighting: data.lighting,
+              status: data.status,
+              hourlyPrice: Number(data.hourlyPrice),
+              imageUrl: data.imageUrl,
+            } satisfies Court;
+          })
+          .sort((a, b) => a.code.localeCompare(b.code));
+
+        setCourts(loaded);
+      },
+      (err) => {
+        setConnectionStatus('reconnecting');
+        console.error('Courts snapshot error:', err);
+      }
+    );
+
+    return () => unsub();
+  }, [isAdminUser]);
+
+  // Public Bookings real-time listener (NO PII stored in this collection)
+  useEffect(() => {
+    const bookingsQuery = query(
+      collection(db, 'bookings'),
+      where('courtId', 'in', ['court-a', 'court-b'])
+    );
+    const unsub = onSnapshot(
+      bookingsQuery,
+      (snapshot) => {
+        setConnectionStatus('cloud');
+        setLastSyncedAt(new Date().toISOString());
+        const list = snapshot.docs
+          .map((d) => d.data() as PublicBookingDoc)
+          .sort((a, b) => toIsoString(b.createdAt).localeCompare(toIsoString(a.createdAt)));
+        setPublicBookings(list);
+        setIsLoading(false);
+      },
+      (err) => {
+        setConnectionStatus('reconnecting');
+        setIsLoading(false);
+        console.error('Bookings snapshot error:', err);
+      }
+    );
+
+    return () => unsub();
+  }, []);
+
+  // Private Contacts listener (Strictly restricted to authenticated owner or admin)
+  useEffect(() => {
+    if (!isAuthReady || !authUser) {
+      setContactMap(new Map());
+      return;
+    }
+
+    const contactsQuery = isAdminUser
+      ? query(collection(db, 'booking_contacts'))
+      : query(collection(db, 'booking_contacts'), where('ownerUid', '==', authUser.uid));
+
+    const unsub = onSnapshot(
+      contactsQuery,
+      (snapshot) => {
+        const nextMap = new Map<string, BookingContactDoc>();
+        for (const d of snapshot.docs) {
+          const data = d.data() as BookingContactDoc;
+          nextMap.set(data.bookingId || d.id, data);
+        }
+        setContactMap(nextMap);
+      },
+      (err) => {
+        handleFirestoreError(err, OperationType.LIST, 'booking_contacts');
+      }
+    );
+
+    return () => unsub();
+  }, [authUser, isAdminUser, isAuthReady]);
+
+  // Temporary Holds listener
+  useEffect(() => {
+    const holdsQuery = query(
+      collection(db, 'holds'),
+      where('courtId', 'in', ['court-a', 'court-b'])
+    );
+    const unsub = onSnapshot(
+      holdsQuery,
+      (snapshot) => {
+        const list = snapshot.docs.map((d) => ({
+          id: d.id,
+          data: d.data() as HoldDoc,
+        }));
+        setRawHolds(list);
+      },
+      (err) => {
+        console.error('Holds snapshot error:', err);
+      }
+    );
+
+    return () => unsub();
+  }, []);
+
+  // Merge non-PII public bookings with authorized private contacts
+  const bookings: Booking[] = useMemo(() => {
+    return publicBookings.map((b) => {
+      const contact = contactMap.get(b.id);
+      return {
+        id: b.id,
+        bookingCode: b.bookingCode,
+        courtId: b.courtId,
+        date: b.date,
+        slots: Array.isArray(b.slots) ? b.slots : [],
+        customerName: contact?.customerName || b.displayName,
+        customerPhone: contact?.customerPhone || '-',
+        customerEmail: contact?.customerEmail,
+        paymentMethod: b.paymentMethod,
+        status: b.status,
+        kind: b.kind,
+        addons: Array.isArray(b.addons) ? b.addons : [],
+        subtotal: b.subtotal,
+        totalAmount: b.totalAmount,
+        notes: b.notes,
+        createdAt: toIsoString(b.createdAt),
+        updatedAt: toIsoString(b.updatedAt),
+      };
+    });
+  }, [contactMap, publicBookings]);
+
+  const holds: SlotHold[] = useMemo(() => {
+    const now = Date.now();
+    return rawHolds
+      .filter(({ data }) => data.expiresAt > now && data.ownerUid !== authUser?.uid)
+      .map(({ id, data }) => ({
+        key: id,
+        courtId: data.courtId,
+        date: data.date,
+        hour: data.hour,
+        clientId: data.ownerUid,
+        expiresAt: data.expiresAt,
+      }));
+  }, [authUser?.uid, rawHolds]);
+
+  const syncHold = useCallback(
+    async (courtId: string, date: string, slots: number[]) => {
+      const user = auth.currentUser;
+      if (!user) return;
+
+      const nextIds =
+        courtId && date && slots.length > 0
+          ? slots.filter((hr) => OPERATING_HOURS.includes(hr)).map((hr) => `${courtId}_${date}_${hr}`)
+          : [];
+
+      const toDelete = myHoldIdsRef.current.filter((id) => !nextIds.includes(id));
+      myHoldIdsRef.current = nextIds;
+
+      if (toDelete.length === 0 && nextIds.length === 0) return;
+
+      try {
+        const batch = writeBatch(db);
+        for (const oldId of toDelete) {
+          batch.delete(doc(db, 'holds', oldId));
+        }
+        const expiresAt = Date.now() + 120_000;
+        for (const hr of slots) {
+          if (!OPERATING_HOURS.includes(hr) || !courtId || !date) continue;
+          const holdId = `${courtId}_${date}_${hr}`;
+          batch.set(doc(db, 'holds', holdId), {
+            courtId,
+            date,
+            hour: hr,
+            ownerUid: user.uid,
+            expiresAt,
+            updatedAt: serverTimestamp(),
+          });
+        }
+        await batch.commit();
+      } catch (err) {
+        console.error('Sync hold warning:', err);
+      }
+    },
+    []
+  );
+
+  const unlockManagement = useCallback(
+    async (passcode: string): Promise<void> => {
+      if (passcode.trim() !== MANAGEMENT_PASSCODE) {
+        throw new Error('Sandi salah. Silakan coba kembali.');
+      }
+
+      let currentUser = auth.currentUser;
+      if (!currentUser) {
+        currentUser = await signInWithGoogle();
+      }
+
+      let allowed = isAdminEmail(currentUser.email);
+      if (!allowed) {
+        try {
+          const snap = await getDoc(doc(db, 'admins', currentUser.uid));
+          allowed = snap.exists();
+          setIsRegistryAdmin(allowed);
+        } catch {
+          allowed = false;
+        }
+      }
+
+      if (!allowed) {
+        throw new Error(
+          `Akun ${currentUser.email || 'ini'} bukan pengelola arena. Silakan masuk dengan akun admin (${ADMIN_EMAIL}).`
+        );
+      }
+
+      try {
+        sessionStorage.setItem(MGMT_SESSION_KEY, 'true');
+      } catch {
+        // Ignore storage issues
+      }
+      setManagementUnlocked(true);
+    },
+    [signInWithGoogle]
+  );
+
+  const lockManagement = useCallback(() => {
+    try {
+      sessionStorage.removeItem(MGMT_SESSION_KEY);
+    } catch {
+      // Ignore storage issues
+    }
+    setManagementUnlocked(false);
   }, []);
 
   const createBooking = useCallback(
     async (input: CreateBookingInput): Promise<Booking> => {
-      if (backendMode !== 'local') {
-        try {
-          const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-          if (managementToken) {
-            headers['x-management-token'] = managementToken;
-          }
-          const res = await fetch('/api/bookings', {
-            method: 'POST',
-            headers,
-            body: JSON.stringify(input),
-          });
-          const { isJson, data } = await parseJsonResponse<Booking & { error?: string }>(res);
-          if (isJson && data) {
-            if (!res.ok) {
-              if (res.status === 401) lockManagement();
-              throw new Error(data.error || 'Gagal membuat pemesanan.');
-            }
-            setBookings((prev) => (prev.some((b) => b.id === data.id) ? prev : [data, ...prev]));
-            return data;
-          }
-        } catch (err) {
-          if (err instanceof Error && !err.message.includes('Failed to fetch')) {
-            throw err;
-          }
-        }
+      let user = auth.currentUser;
+      if (!user) {
+        user = await signInWithGoogle();
       }
 
-      // Local fallback mode
-      const current = loadLocalDb();
-      const court = current.courts.find((c) => c.id === input.courtId);
-      if (!court) throw new Error('Lapangan tidak ditemukan.');
+      const court = courts.find((c) => c.id === input.courtId);
+      if (!court) {
+        throw new Error('Lapangan tidak ditemukan.');
+      }
       if (court.status === 'maintenance' && input.kind !== 'maintenance') {
         throw new Error(`${court.name} sedang dalam status perawatan.`);
       }
@@ -407,11 +489,12 @@ export function useArenaRealtime() {
       const normalizedSlots = Array.from(
         new Set(input.slots.map(Number).filter((hr) => OPERATING_HOURS.includes(hr)))
       ).sort((a, b) => a - b);
+
       if (normalizedSlots.length === 0) {
         throw new Error('Slot jam yang dipilih tidak valid.');
       }
 
-      const conflict = current.bookings.find(
+      const conflict = bookings.find(
         (b) =>
           b.courtId === input.courtId &&
           b.date === input.date &&
@@ -420,8 +503,21 @@ export function useArenaRealtime() {
       );
       if (conflict) {
         throw new Error(
-          `Slot bentrok dengan kode booking ${conflict.bookingCode} (${conflict.customerName}).`
+          `Slot bentrok dengan kode booking ${conflict.bookingCode} (${conflict.customerName}). Silakan pilih jam lain.`
         );
+      }
+
+      const cleanName = input.customerName.trim();
+      const cleanPhone = input.customerPhone.trim() || '-';
+      if (cleanName.length < 2) {
+        throw new Error('Nama pemesan wajib diisi minimal 2 karakter.');
+      }
+      if (
+        input.kind !== 'tournament' &&
+        input.kind !== 'maintenance' &&
+        cleanPhone.length < 8
+      ) {
+        throw new Error('Nomor WhatsApp aktif wajib diisi minimal 8 digit.');
       }
 
       const resolvedAddons: BookingAddon[] = [];
@@ -440,40 +536,88 @@ export function useArenaRealtime() {
         }
       }
 
+      const kind: BookingKind = input.kind || 'customer';
       const subtotal =
-        input.kind === 'maintenance' ? 0 : normalizedSlots.length * court.hourlyPrice;
+        kind === 'maintenance' ? 0 : normalizedSlots.length * court.hourlyPrice;
       const addonTotal = resolvedAddons.reduce((sum, a) => sum + a.price * a.qty, 0);
-      const nowIso = new Date().toISOString();
+      const totalAmount = subtotal + addonTotal;
+      const initialStatus: BookingStatus =
+        isAdminEmail(user.email) || isRegistryAdmin
+          ? input.status || 'Menunggu'
+          : 'Menunggu';
 
-      const created: Booking = {
-        id: `bk-${Math.random().toString(36).slice(2, 10)}`,
-        bookingCode: generateLocalBookingCode(),
+      const bookingId = generateBookingId();
+      const bookingCode = generateBookingCode();
+      const cleanNotes = input.notes?.trim();
+
+      const bookingPayload: Record<string, unknown> = {
+        id: bookingId,
+        bookingCode,
         courtId: input.courtId,
         date: input.date,
         slots: normalizedSlots,
-        customerName: input.customerName.trim(),
-        customerPhone: input.customerPhone.trim() || '-',
-        customerEmail: input.customerEmail,
+        displayName: cleanName,
         paymentMethod: 'Bayar di Kasir',
-        status: input.status || 'Menunggu',
-        kind: input.kind || 'customer',
+        status: initialStatus,
+        kind,
         addons: resolvedAddons,
         subtotal,
-        totalAmount: subtotal + addonTotal,
-        notes: input.notes?.trim() || undefined,
+        totalAmount,
+        ownerUid: user.uid,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      };
+      if (cleanNotes) {
+        bookingPayload.notes = cleanNotes;
+      }
+
+      const contactPayload: Record<string, unknown> = {
+        bookingId,
+        bookingCode,
+        customerName: cleanName,
+        customerPhone: cleanPhone,
+        ownerUid: user.uid,
+        createdAt: serverTimestamp(),
+      };
+      const cleanEmail = input.customerEmail?.trim() || user.email || undefined;
+      if (cleanEmail) {
+        contactPayload.customerEmail = cleanEmail;
+      }
+
+      try {
+        const batch = writeBatch(db);
+        batch.set(doc(db, 'bookings', bookingId), bookingPayload);
+        batch.set(doc(db, 'booking_contacts', bookingId), contactPayload);
+        for (const hr of normalizedSlots) {
+          batch.delete(doc(db, 'holds', `${input.courtId}_${input.date}_${hr}`));
+        }
+        await batch.commit();
+      } catch (err) {
+        handleFirestoreError(err, OperationType.WRITE, `bookings/${bookingId}`);
+      }
+
+      const nowIso = new Date().toISOString();
+      return {
+        id: bookingId,
+        bookingCode,
+        courtId: input.courtId,
+        date: input.date,
+        slots: normalizedSlots,
+        customerName: cleanName,
+        customerPhone: cleanPhone,
+        customerEmail: cleanEmail,
+        paymentMethod: 'Bayar di Kasir',
+        status: initialStatus,
+        kind,
+        addons: resolvedAddons,
+        subtotal,
+        totalAmount,
+        notes: cleanNotes,
         createdAt: nowIso,
         updatedAt: nowIso,
       };
-
-      const nextState: LocalDbState = {
-        ...current,
-        bookings: [created, ...current.bookings],
-      };
-      broadcastLocalSync(nextState);
-      setBookings(nextState.bookings);
-      return created;
     },
-    [backendMode, broadcastLocalSync, lockManagement, managementToken]
+    [bookings, courts, isRegistryAdmin, signInWithGoogle]
   );
 
   const updateBooking = useCallback(
@@ -481,121 +625,99 @@ export function useArenaRealtime() {
       id: string,
       patch: Partial<Pick<Booking, 'status' | 'notes' | 'paymentMethod' | 'courtId' | 'date' | 'slots'>>
     ): Promise<Booking> => {
-      if (backendMode !== 'local') {
-        try {
-          const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-          if (managementToken) {
-            headers['x-management-token'] = managementToken;
-          }
-          const res = await fetch(`/api/bookings/${id}`, {
-            method: 'PATCH',
-            headers,
-            body: JSON.stringify(patch),
-          });
-          const { isJson, data } = await parseJsonResponse<Booking & { error?: string }>(res);
-          if (isJson && data) {
-            if (!res.ok) {
-              if (res.status === 401) lockManagement();
-              throw new Error(data.error || 'Gagal memperbarui jadwal.');
-            }
-            setBookings((prev) => prev.map((b) => (b.id === data.id ? data : b)));
-            return data;
-          }
-        } catch (err) {
-          if (err instanceof Error && !err.message.includes('Failed to fetch')) {
-            throw err;
-          }
+      const existing = bookings.find((b) => b.id === id);
+      if (!existing) {
+        throw new Error('Data booking tidak ditemukan.');
+      }
+
+      const nextCourtId = patch.courtId || existing.courtId;
+      const nextDate = patch.date || existing.date;
+      const nextSlots =
+        Array.isArray(patch.slots) && patch.slots.length > 0
+          ? Array.from(new Set(patch.slots.map(Number).filter((hr) => OPERATING_HOURS.includes(hr)))).sort(
+              (a, b) => a - b
+            )
+          : existing.slots;
+      const nextStatus = patch.status || existing.status;
+
+      if (nextStatus !== 'Dibatalkan') {
+        const conflict = bookings.find(
+          (b) =>
+            b.id !== existing.id &&
+            b.courtId === nextCourtId &&
+            b.date === nextDate &&
+            b.status !== 'Dibatalkan' &&
+            b.slots.some((s) => nextSlots.includes(s))
+        );
+        if (conflict) {
+          throw new Error(`Jadwal bentrok dengan ${conflict.bookingCode} (${conflict.customerName}).`);
         }
       }
 
-      const current = loadLocalDb();
-      const idx = current.bookings.findIndex((b) => b.id === id);
-      if (idx === -1) throw new Error('Data booking tidak ditemukan.');
+      const court = courts.find((c) => c.id === nextCourtId);
+      const subtotal =
+        existing.kind === 'maintenance' || !court
+          ? existing.subtotal
+          : nextSlots.length * court.hourlyPrice;
+      const addonTotal = existing.addons.reduce((sum, a) => sum + a.price * a.qty, 0);
+      const totalAmount = existing.kind === 'maintenance' ? 0 : subtotal + addonTotal;
 
-      const existing = current.bookings[idx];
-      const updated: Booking = {
+      const updatePayload: Record<string, unknown> = {
+        status: nextStatus,
+        paymentMethod: patch.paymentMethod || existing.paymentMethod,
+        courtId: nextCourtId,
+        date: nextDate,
+        slots: nextSlots,
+        subtotal,
+        totalAmount,
+        updatedAt: serverTimestamp(),
+      };
+      if (patch.notes !== undefined) {
+        updatePayload.notes = patch.notes;
+      }
+
+      try {
+        await updateDoc(doc(db, 'bookings', id), updatePayload);
+      } catch (err) {
+        handleFirestoreError(err, OperationType.UPDATE, `bookings/${id}`);
+      }
+
+      return {
         ...existing,
-        ...patch,
+        courtId: nextCourtId,
+        date: nextDate,
+        slots: nextSlots,
+        status: nextStatus,
+        paymentMethod: patch.paymentMethod || existing.paymentMethod,
+        notes: patch.notes !== undefined ? patch.notes : existing.notes,
+        subtotal,
+        totalAmount,
         updatedAt: new Date().toISOString(),
       };
-      const nextBookings = current.bookings.map((b) => (b.id === id ? updated : b));
-      const nextState: LocalDbState = { ...current, bookings: nextBookings };
-      broadcastLocalSync(nextState);
-      setBookings(nextBookings);
-      return updated;
     },
-    [backendMode, broadcastLocalSync, lockManagement, managementToken]
+    [bookings, courts]
   );
 
-  const deleteBooking = useCallback(
-    async (id: string): Promise<void> => {
-      if (backendMode !== 'local') {
-        try {
-          const headers: Record<string, string> = {};
-          if (managementToken) {
-            headers['x-management-token'] = managementToken;
-          }
-          const res = await fetch(`/api/bookings/${id}`, { method: 'DELETE', headers });
-          const { isJson, data } = await parseJsonResponse<{ error?: string }>(res);
-          if (isJson && data) {
-            if (!res.ok) {
-              if (res.status === 401) lockManagement();
-              throw new Error(data.error || 'Gagal menghapus data booking.');
-            }
-            setBookings((prev) => prev.filter((b) => b.id !== id));
-            return;
-          }
-        } catch (err) {
-          if (err instanceof Error && !err.message.includes('Failed to fetch')) {
-            throw err;
-          }
-        }
-      }
-
-      const current = loadLocalDb();
-      const nextBookings = current.bookings.filter((b) => b.id !== id);
-      const nextState: LocalDbState = { ...current, bookings: nextBookings };
-      broadcastLocalSync(nextState);
-      setBookings(nextBookings);
-    },
-    [backendMode, broadcastLocalSync, lockManagement, managementToken]
-  );
+  const deleteBooking = useCallback(async (id: string): Promise<void> => {
+    try {
+      const batch = writeBatch(db);
+      batch.delete(doc(db, 'bookings', id));
+      batch.delete(doc(db, 'booking_contacts', id));
+      await batch.commit();
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, `bookings/${id}`);
+    }
+  }, []);
 
   const updateCourt = useCallback(
     async (
       id: string,
       patch: { status?: CourtStatus; hourlyPrice?: number }
     ): Promise<Court> => {
-      if (backendMode !== 'local') {
-        try {
-          const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-          if (managementToken) {
-            headers['x-management-token'] = managementToken;
-          }
-          const res = await fetch(`/api/courts/${id}`, {
-            method: 'PATCH',
-            headers,
-            body: JSON.stringify(patch),
-          });
-          const { isJson, data } = await parseJsonResponse<Court & { error?: string }>(res);
-          if (isJson && data) {
-            if (!res.ok) {
-              if (res.status === 401) lockManagement();
-              throw new Error(data.error || 'Gagal memperbarui status lapangan.');
-            }
-            setCourts((prev) => prev.map((c) => (c.id === data.id ? data : c)));
-            return data;
-          }
-        } catch (err) {
-          if (err instanceof Error && !err.message.includes('Failed to fetch')) {
-            throw err;
-          }
-        }
+      const existing = courts.find((c) => c.id === id);
+      if (!existing) {
+        throw new Error('Lapangan tidak ditemukan.');
       }
-
-      const current = loadLocalDb();
-      const existing = current.courts.find((c) => c.id === id);
-      if (!existing) throw new Error('Lapangan tidak ditemukan.');
 
       const updated: Court = {
         ...existing,
@@ -605,13 +727,19 @@ export function useArenaRealtime() {
             ? patch.hourlyPrice
             : existing.hourlyPrice,
       };
-      const nextCourts = current.courts.map((c) => (c.id === id ? updated : c));
-      const nextState: LocalDbState = { ...current, courts: nextCourts };
-      broadcastLocalSync(nextState);
-      setCourts(nextCourts);
+
+      try {
+        await setDoc(doc(db, 'courts', id), {
+          ...updated,
+          updatedAt: serverTimestamp(),
+        });
+      } catch (err) {
+        handleFirestoreError(err, OperationType.UPDATE, `courts/${id}`);
+      }
+
       return updated;
     },
-    [backendMode, broadcastLocalSync, lockManagement, managementToken]
+    [courts]
   );
 
   return {
@@ -622,7 +750,12 @@ export function useArenaRealtime() {
     connectionStatus,
     isLoading,
     lastSyncedAt,
-    isManagementUnlocked: Boolean(managementToken),
+    authUser,
+    isAuthReady,
+    isAdminUser,
+    signInWithGoogle,
+    signOutUser,
+    isManagementUnlocked: managementUnlocked && isAdminUser,
     unlockManagement,
     lockManagement,
     syncHold,

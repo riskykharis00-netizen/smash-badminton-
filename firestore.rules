@@ -1,0 +1,268 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global Safety Net: Default-deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // === Global Hardened Primitives ===
+    function incoming() { return request.resource.data; }
+    function existing() { return resource.data; }
+    function isSignedIn() { return request.auth != null; }
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+    function isValidId(id) {
+      return id is string && id.size() >= 2 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+    function isOwner(ownerUid) {
+      return isVerifiedUser() && request.auth.uid == ownerUid;
+    }
+    function isBootstrappedAdmin() {
+      return isVerifiedUser()
+        && request.auth.token.email is string
+        && request.auth.token.email.lower() == 'riskykharis00@gmail.com';
+    }
+    function isAdmin() {
+      return isBootstrappedAdmin()
+        || (isVerifiedUser() && exists(/databases/$(database)/documents/admins/$(request.auth.uid)));
+    }
+
+    // === Validation Blueprints ===
+    function isValidCourt(data) {
+      return data.keys().hasAll([
+          'id', 'name', 'code', 'category', 'categoryLabel',
+          'surface', 'lighting', 'status', 'hourlyPrice', 'imageUrl', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'name', 'code', 'category', 'categoryLabel',
+          'surface', 'lighting', 'status', 'hourlyPrice', 'imageUrl', 'updatedAt'
+        ])
+        && data.id is string && data.id in ['court-a', 'court-b']
+        && data.name is string && data.name.size() >= 2 && data.name.size() <= 60
+        && data.code is string && data.code.size() >= 1 && data.code.size() <= 10
+        && data.category is string && data.category == 'keramik'
+        && data.categoryLabel is string && data.categoryLabel.size() >= 2 && data.categoryLabel.size() <= 60
+        && data.surface is string && data.surface.size() >= 2 && data.surface.size() <= 120
+        && data.lighting is string && data.lighting.size() >= 2 && data.lighting.size() <= 120
+        && data.status is string && data.status in ['active', 'maintenance']
+        && data.hourlyPrice is int && data.hourlyPrice >= 5000 && data.hourlyPrice <= 500000
+        && data.imageUrl is string && data.imageUrl.size() >= 2 && data.imageUrl.size() <= 300
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidBooking(data) {
+      return data.keys().hasAll([
+          'id', 'bookingCode', 'courtId', 'date', 'slots', 'displayName',
+          'paymentMethod', 'status', 'kind', 'addons', 'subtotal',
+          'totalAmount', 'ownerUid', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'bookingCode', 'courtId', 'date', 'slots', 'displayName',
+          'paymentMethod', 'status', 'kind', 'addons', 'subtotal',
+          'totalAmount', 'notes', 'ownerUid', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.id)
+        && data.bookingCode is string && data.bookingCode.size() >= 4 && data.bookingCode.size() <= 20
+        && data.bookingCode.matches('^SM-[A-Z0-9]{4,12}$')
+        && data.courtId is string && data.courtId in ['court-a', 'court-b']
+        && data.date is string && data.date.size() == 10 && data.date.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && data.slots is list && data.slots.size() >= 1 && data.slots.size() <= 16
+        && data.slots[0] is int && data.slots[0] >= 8 && data.slots[0] <= 23
+        && data.displayName is string && data.displayName.size() >= 2 && data.displayName.size() <= 80
+        && data.paymentMethod is string && data.paymentMethod == 'Bayar di Kasir'
+        && data.status is string && data.status in ['Menunggu', 'Lunas', 'Check-In', 'Selesai', 'Dibatalkan']
+        && data.kind is string && data.kind in ['customer', 'tournament', 'maintenance']
+        && data.addons is list && data.addons.size() <= 5
+        && data.subtotal is int && data.subtotal >= 0 && data.subtotal <= 50000000
+        && data.totalAmount is int && data.totalAmount >= 0 && data.totalAmount <= 50000000
+        && (data.kind != 'customer' || (data.subtotal >= 5000 && data.totalAmount >= data.subtotal))
+        && (!('notes' in data) || (data.notes is string && data.notes.size() <= 200))
+        && data.ownerUid is string && data.ownerUid.size() >= 1 && data.ownerUid.size() <= 128
+        && data.ownerUid == request.auth.uid
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidBookingForUpdate(data) {
+      return data.keys().hasAll([
+          'id', 'bookingCode', 'courtId', 'date', 'slots', 'displayName',
+          'paymentMethod', 'status', 'kind', 'addons', 'subtotal',
+          'totalAmount', 'ownerUid', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'bookingCode', 'courtId', 'date', 'slots', 'displayName',
+          'paymentMethod', 'status', 'kind', 'addons', 'subtotal',
+          'totalAmount', 'notes', 'ownerUid', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.id)
+        && data.bookingCode is string && data.bookingCode.size() >= 4 && data.bookingCode.size() <= 20
+        && data.bookingCode.matches('^SM-[A-Z0-9]{4,12}$')
+        && data.courtId is string && data.courtId in ['court-a', 'court-b']
+        && data.date is string && data.date.size() == 10 && data.date.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && data.slots is list && data.slots.size() >= 1 && data.slots.size() <= 16
+        && data.slots[0] is int && data.slots[0] >= 8 && data.slots[0] <= 23
+        && data.displayName is string && data.displayName.size() >= 2 && data.displayName.size() <= 80
+        && data.paymentMethod is string && data.paymentMethod == 'Bayar di Kasir'
+        && data.status is string && data.status in ['Menunggu', 'Lunas', 'Check-In', 'Selesai', 'Dibatalkan']
+        && data.kind is string && data.kind in ['customer', 'tournament', 'maintenance']
+        && data.addons is list && data.addons.size() <= 5
+        && data.subtotal is int && data.subtotal >= 0 && data.subtotal <= 50000000
+        && data.totalAmount is int && data.totalAmount >= 0 && data.totalAmount <= 50000000
+        && (data.kind != 'customer' || (data.subtotal >= 5000 && data.totalAmount >= data.subtotal))
+        && (!('notes' in data) || (data.notes is string && data.notes.size() <= 200))
+        && data.ownerUid is string && data.ownerUid.size() >= 1 && data.ownerUid.size() <= 128
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidBookingContact(data) {
+      return data.keys().hasAll([
+          'bookingId', 'bookingCode', 'customerName', 'customerPhone', 'ownerUid', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'bookingId', 'bookingCode', 'customerName', 'customerPhone', 'customerEmail', 'ownerUid', 'createdAt'
+        ])
+        && isValidId(data.bookingId)
+        && data.bookingCode is string && data.bookingCode.size() >= 4 && data.bookingCode.size() <= 20
+        && data.customerName is string && data.customerName.size() >= 2 && data.customerName.size() <= 80
+        && data.customerPhone is string && data.customerPhone.size() >= 1 && data.customerPhone.size() <= 30
+        && (!('customerEmail' in data) || (data.customerEmail is string && data.customerEmail.size() <= 120))
+        && data.ownerUid is string && data.ownerUid.size() >= 1 && data.ownerUid.size() <= 128
+        && data.ownerUid == request.auth.uid
+        && data.createdAt is timestamp;
+    }
+
+    function isValidSlotHold(data) {
+      return data.keys().hasAll(['courtId', 'date', 'hour', 'ownerUid', 'expiresAt', 'updatedAt'])
+        && data.keys().hasOnly(['courtId', 'date', 'hour', 'ownerUid', 'expiresAt', 'updatedAt'])
+        && data.courtId is string && data.courtId in ['court-a', 'court-b']
+        && data.date is string && data.date.size() == 10 && data.date.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && data.hour is int && data.hour >= 8 && data.hour <= 23
+        && data.ownerUid is string && data.ownerUid.size() >= 1 && data.ownerUid.size() <= 128
+        && data.ownerUid == request.auth.uid
+        && data.expiresAt is int && data.expiresAt > 0
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidAdminUser(data) {
+      return data.keys().hasAll(['uid', 'email', 'createdAt'])
+        && data.keys().hasOnly(['uid', 'email', 'createdAt'])
+        && isValidId(data.uid)
+        && data.email is string && data.email.size() >= 3 && data.email.size() <= 120
+        && data.createdAt is timestamp;
+    }
+
+    // === Courts Collection (Non-PII Public Schedule Metadata) ===
+    match /courts/{courtId} {
+      allow get: if isValidId(courtId);
+      allow list: if resource.data.id in ['court-a', 'court-b'];
+      allow create, update: if isAdmin()
+        && isValidId(courtId)
+        && isValidCourt(incoming())
+        && incoming().id == courtId
+        && incoming().updatedAt == request.time;
+      allow delete: if false;
+    }
+
+    // === Bookings Collection (Non-PII Public Schedule Slots) ===
+    match /bookings/{bookingId} {
+      allow get: if isValidId(bookingId);
+      allow list: if resource.data.courtId in ['court-a', 'court-b'];
+
+      allow create: if isVerifiedUser()
+        && isValidId(bookingId)
+        && isValidBooking(incoming())
+        && incoming().id == bookingId
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin()
+          || (
+            incoming().kind == 'customer'
+            && incoming().status == 'Menunggu'
+            && existsAfter(/databases/$(database)/documents/booking_contacts/$(bookingId))
+          )
+        );
+
+      allow update: if isVerifiedUser()
+        && isValidId(bookingId)
+        && isValidBookingForUpdate(incoming())
+        && incoming().id == existing().id
+        && incoming().bookingCode == existing().bookingCode
+        && incoming().ownerUid == existing().ownerUid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          (
+            isAdmin()
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'status', 'notes', 'paymentMethod', 'courtId', 'date', 'slots', 'subtotal', 'totalAmount', 'updatedAt'
+            ])
+          )
+          || (
+            isOwner(existing().ownerUid)
+            && existing().status == 'Menunggu'
+            && incoming().status == 'Dibatalkan'
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+          )
+        );
+
+      allow delete: if isAdmin() && isValidId(bookingId);
+    }
+
+    // === Isolated Private Contact PII Collection ===
+    match /booking_contacts/{bookingId} {
+      allow get: if isVerifiedUser()
+        && isValidId(bookingId)
+        && (isAdmin() || existing().ownerUid == request.auth.uid);
+      allow list: if isVerifiedUser()
+        && (isBootstrappedAdmin() || resource.data.ownerUid == request.auth.uid);
+
+      allow create: if isVerifiedUser()
+        && isValidId(bookingId)
+        && isValidBookingContact(incoming())
+        && incoming().bookingId == bookingId
+        && incoming().createdAt == request.time
+        && existsAfter(/databases/$(database)/documents/bookings/$(bookingId));
+
+      allow update: if false;
+      allow delete: if isAdmin() && isValidId(bookingId);
+    }
+
+    // === Real-Time Temporary Slot Holds ===
+    match /holds/{holdId} {
+      allow get: if isValidId(holdId);
+      allow list: if resource.data.courtId in ['court-a', 'court-b'];
+
+      allow create: if isVerifiedUser()
+        && isValidId(holdId)
+        && isValidSlotHold(incoming())
+        && incoming().updatedAt == request.time;
+
+      allow update: if isVerifiedUser()
+        && isValidId(holdId)
+        && isValidSlotHold(incoming())
+        && incoming().updatedAt == request.time
+        && (existing().ownerUid == request.auth.uid || existing().expiresAt <= request.time.toMillis());
+
+      allow delete: if isVerifiedUser()
+        && isValidId(holdId)
+        && (isAdmin() || existing().ownerUid == request.auth.uid);
+    }
+
+    // === Admin Registry ===
+    match /admins/{uid} {
+      allow get: if isVerifiedUser() && isValidId(uid) && (isBootstrappedAdmin() || request.auth.uid == uid);
+      allow list: if isBootstrappedAdmin();
+      allow create: if isBootstrappedAdmin()
+        && isValidId(uid)
+        && isValidAdminUser(incoming())
+        && incoming().uid == uid
+        && incoming().createdAt == request.time;
+      allow update: if false;
+      allow delete: if isBootstrappedAdmin() && isValidId(uid);
+    }
+  }
+}

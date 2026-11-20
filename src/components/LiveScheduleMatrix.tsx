@@ -2,8 +2,10 @@ import {
   Calendar,
   Check,
   Clock,
+  Cloud,
   Copy,
   Database,
+  LogOut,
   MessageCircle,
   Minus,
   Plus,
@@ -16,6 +18,7 @@ import {
 } from 'lucide-react';
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import type { ConnectionStatus, CreateBookingInput } from '../hooks/useArenaRealtime';
+import { extractReadableError } from '../lib/firebase';
 import {
   ADDON_CATALOG,
   OPERATING_HOURS,
@@ -41,6 +44,10 @@ interface LiveScheduleMatrixProps {
   connectionStatus: ConnectionStatus;
   onlineCount: number;
   isLoading: boolean;
+  authUserEmail?: string | null;
+  authUserName?: string | null;
+  onSignInGoogle?: () => Promise<unknown>;
+  onSignOutGoogle?: () => Promise<void>;
   selectedCourtFilter: 'all' | 'court-a' | 'court-b';
   onSelectCourtFilter: (filter: 'all' | 'court-a' | 'court-b') => void;
   onSyncHold: (courtId: string, date: string, slots: number[]) => void;
@@ -55,6 +62,10 @@ export function LiveScheduleMatrix({
   connectionStatus,
   onlineCount,
   isLoading,
+  authUserEmail,
+  authUserName,
+  onSignInGoogle,
+  onSignOutGoogle,
   selectedCourtFilter,
   onSelectCourtFilter,
   onSyncHold,
@@ -227,7 +238,7 @@ export function LiveScheduleMatrix({
       setNotes('');
       onSyncHold('', selectedDate, []);
     } catch (err) {
-      setFormError(err instanceof Error ? err.message : 'Terjadi kesalahan saat menyimpan booking.');
+      setFormError(extractReadableError(err, 'Terjadi kesalahan saat menyimpan booking.'));
     } finally {
       setIsSubmitting(false);
     }
@@ -262,7 +273,12 @@ export function LiveScheduleMatrix({
 
           <div className="flex flex-wrap items-center gap-3">
             <div className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3.5 py-2 text-xs font-medium text-slate-700">
-              {connectionStatus === 'connected' ? (
+              {connectionStatus === 'cloud' ? (
+                <>
+                  <Cloud className="h-3.5 w-3.5 text-emerald-600" />
+                  <span>Cloud Online · Sinkronisasi Real-Time</span>
+                </>
+              ) : connectionStatus === 'connected' ? (
                 <>
                   <Wifi className="h-3.5 w-3.5 text-emerald-600" />
                   <span>
@@ -742,12 +758,59 @@ export function LiveScheduleMatrix({
                   </p>
                 )}
 
+                <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs">
+                  {authUserEmail ? (
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="font-semibold text-slate-800 truncate">
+                          Akun Google: {authUserName || authUserEmail}
+                        </p>
+                        <p className="text-[11px] text-slate-500 truncate">{authUserEmail}</p>
+                      </div>
+                      {onSignOutGoogle && (
+                        <button
+                          type="button"
+                          onClick={() => void onSignOutGoogle()}
+                          className="inline-flex items-center gap-1 rounded border border-slate-300 bg-white px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-100 cursor-pointer shrink-0"
+                        >
+                          <LogOut className="h-3 w-3" />
+                          <span>Keluar</span>
+                        </button>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-[11px] leading-snug text-slate-600">
+                        Masuk dengan Google untuk menyimpan bukti &amp; nomor WhatsApp Anda secara aman.
+                      </p>
+                      {onSignInGoogle && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setFormError(null);
+                            void onSignInGoogle().catch((err) => {
+                              setFormError(extractReadableError(err, 'Gagal masuk Google.'));
+                            });
+                          }}
+                          className="rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-[11px] font-semibold text-slate-800 hover:bg-slate-100 cursor-pointer shrink-0 whitespace-nowrap"
+                        >
+                          Masuk Google
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+
                 <button
                   type="submit"
                   disabled={isSubmitting}
                   className="w-full rounded-lg bg-emerald-600 px-4 py-3 text-sm font-semibold text-white transition-colors hover:bg-emerald-700 disabled:opacity-60 cursor-pointer"
                 >
-                  {isSubmitting ? 'Memproses Jadwal...' : 'Konfirmasi & Kunci Jadwal'}
+                  {isSubmitting
+                    ? 'Memproses Jadwal...'
+                    : authUserEmail
+                    ? 'Konfirmasi & Kunci Jadwal'
+                    : 'Masuk Google & Kunci Jadwal'}
                 </button>
               </form>
             )}

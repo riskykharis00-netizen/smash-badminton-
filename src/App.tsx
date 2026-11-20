@@ -23,6 +23,9 @@ export default function App() {
     onlineCount,
     connectionStatus,
     isLoading,
+    authUser,
+    signInWithGoogle,
+    signOutUser,
     isManagementUnlocked,
     unlockManagement,
     lockManagement,
@@ -132,6 +135,10 @@ export default function App() {
               connectionStatus={connectionStatus}
               onlineCount={onlineCount}
               isLoading={isLoading}
+              authUserEmail={authUser?.email || null}
+              authUserName={authUser?.displayName || null}
+              onSignInGoogle={signInWithGoogle}
+              onSignOutGoogle={signOutUser}
               selectedCourtFilter={selectedCourtFilter}
               onSelectCourtFilter={setSelectedCourtFilter}
               onSyncHold={syncHold}
@@ -168,6 +175,7 @@ export default function App() {
         open={passcodeModalOpen}
         onClose={() => setPasscodeModalOpen(false)}
         onUnlock={handleUnlockSuccess}
+        authUserEmail={authUser?.email || null}
       />
     </div>
   );

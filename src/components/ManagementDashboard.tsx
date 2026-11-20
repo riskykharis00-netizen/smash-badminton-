@@ -1,5 +1,6 @@
 import {
   CheckCircle2,
+  Cloud,
   Database,
   Eye,
   Lock,
@@ -15,6 +16,7 @@ import {
 } from 'lucide-react';
 import { useMemo, useState, type FormEvent } from 'react';
 import type { ConnectionStatus, CreateBookingInput } from '../hooks/useArenaRealtime';
+import { extractReadableError } from '../lib/firebase';
 import {
   OPERATING_HOURS,
   buildWhatsAppConfirmationUrl,
@@ -180,7 +182,7 @@ export function ManagementDashboard({
       });
       setModalMode(null);
     } catch (err) {
-      setModalError(err instanceof Error ? err.message : 'Gagal menyimpan jadwal.');
+      setModalError(extractReadableError(err, 'Gagal menyimpan jadwal.'));
     } finally {
       setModalSaving(false);
     }
@@ -191,7 +193,7 @@ export function ManagementDashboard({
     try {
       await onUpdateBooking(bookingId, { status: nextStatus });
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : 'Gagal mengubah status.');
+      setActionError(extractReadableError(err, 'Gagal mengubah status.'));
     }
   };
 
@@ -201,7 +203,19 @@ export function ManagementDashboard({
       await onDeleteBooking(bookingId);
       setConfirmDeleteId(null);
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : 'Gagal menghapus booking.');
+      setActionError(extractReadableError(err, 'Gagal menghapus booking.'));
+    }
+  };
+
+  const handleCourtUpdate = async (
+    courtId: string,
+    patch: { status?: CourtStatus; hourlyPrice?: number }
+  ) => {
+    setActionError(null);
+    try {
+      await onUpdateCourt(courtId, patch);
+    } catch (err) {
+      setActionError(extractReadableError(err, 'Gagal memperbarui data lapangan.'));
     }
   };
 
@@ -229,7 +243,12 @@ export function ManagementDashboard({
               <span>Konsol Pengelola Arena (Lapangan A & B)</span>
               <span aria-hidden="true">·</span>
               <span className="inline-flex items-center gap-1.5 font-medium text-slate-700">
-                {connectionStatus === 'connected' ? (
+                {connectionStatus === 'cloud' ? (
+                  <>
+                    <Cloud className="h-3.5 w-3.5 text-emerald-600" />
+                    Cloud Online · Sinkronisasi Real-Time
+                  </>
+                ) : connectionStatus === 'connected' ? (
                   <>
                     <Wifi className="h-3.5 w-3.5 text-emerald-600" />
                     Sinkronisasi Live ({onlineCount} terhubung)
@@ -596,7 +615,7 @@ export function ManagementDashboard({
                       <button
                         type="button"
                         onClick={() =>
-                          onUpdateCourt(court.id, {
+                          void handleCourtUpdate(court.id, {
                             status: court.status === 'active' ? 'maintenance' : 'active',
                           })
                         }
@@ -653,7 +672,7 @@ export function ManagementDashboard({
                     {isDirty && (
                       <button
                         type="button"
-                        onClick={() => onUpdateCourt(court.id, { hourlyPrice: draftPrice })}
+                        onClick={() => void handleCourtUpdate(court.id, { hourlyPrice: draftPrice })}
                         className="rounded-lg bg-slate-900 px-4 py-1.5 text-xs font-semibold text-white hover:bg-slate-800 cursor-pointer"
                       >
                         Simpan Tarif
