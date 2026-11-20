@@ -3,17 +3,26 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useEffect, useMemo, useState } from 'react';
-import { BookingLookupModal } from './components/BookingLookupModal';
+import { Suspense, lazy, useEffect, useMemo, useState } from 'react';
 import { CourtsShowcase } from './components/CourtsShowcase';
 import { Footer } from './components/Footer';
 import { HeroSection } from './components/HeroSection';
 import { LiveScheduleMatrix } from './components/LiveScheduleMatrix';
-import { ManagementDashboard } from './components/ManagementDashboard';
-import { ManagementPasscodeModal } from './components/ManagementPasscodeModal';
 import { Navbar, type WorkspaceMode } from './components/Navbar';
 import { useArenaRealtime } from './hooks/useArenaRealtime';
 import { OPERATING_HOURS, getTodayIsoDate, isSlotPast } from './types/booking';
+
+const ManagementDashboard = lazy(() =>
+  import('./components/ManagementDashboard').then((m) => ({ default: m.ManagementDashboard }))
+);
+const BookingLookupModal = lazy(() =>
+  import('./components/BookingLookupModal').then((m) => ({ default: m.BookingLookupModal }))
+);
+const ManagementPasscodeModal = lazy(() =>
+  import('./components/ManagementPasscodeModal').then((m) => ({
+    default: m.ManagementPasscodeModal,
+  }))
+);
 
 export default function App() {
   const {
@@ -160,36 +169,58 @@ export default function App() {
             />
           </>
         ) : (
-          <ManagementDashboard
-            courts={courts}
-            bookings={bookings}
-            connectionStatus={connectionStatus}
-            onlineCount={onlineCount}
-            isLoading={isLoading}
-            onCreateBooking={createBooking}
-            onUpdateBooking={updateBooking}
-            onDeleteBooking={deleteBooking}
-            onUpdateCourt={updateCourt}
-            onLockManagement={handleLockManagement}
-          />
+          <Suspense
+            fallback={
+              <section className="min-h-[calc(100vh-140px)] bg-slate-50 py-10">
+                <div className="mx-auto max-w-[1280px] space-y-6 px-4 sm:px-6 lg:px-8">
+                  <div className="h-14 w-72 animate-pulse rounded-lg bg-slate-200" />
+                  <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+                    {Array.from({ length: 4 }).map((_, i) => (
+                      <div key={i} className="h-28 animate-pulse rounded-xl bg-white border border-slate-200" />
+                    ))}
+                  </div>
+                  <div className="h-72 animate-pulse rounded-xl bg-white border border-slate-200" />
+                </div>
+              </section>
+            }
+          >
+            <ManagementDashboard
+              courts={courts}
+              bookings={bookings}
+              connectionStatus={connectionStatus}
+              onlineCount={onlineCount}
+              isLoading={isLoading}
+              onCreateBooking={createBooking}
+              onUpdateBooking={updateBooking}
+              onDeleteBooking={deleteBooking}
+              onUpdateCourt={updateCourt}
+              onLockManagement={handleLockManagement}
+            />
+          </Suspense>
         )}
       </main>
 
       <Footer onNavigate={handleNavigate} />
 
-      <BookingLookupModal
-        open={lookupOpen}
-        onClose={() => setLookupOpen(false)}
-        bookings={bookings}
-        courts={courts}
-      />
+      <Suspense fallback={null}>
+        {lookupOpen && (
+          <BookingLookupModal
+            open={lookupOpen}
+            onClose={() => setLookupOpen(false)}
+            bookings={bookings}
+            courts={courts}
+          />
+        )}
 
-      <ManagementPasscodeModal
-        open={passcodeModalOpen}
-        onClose={() => setPasscodeModalOpen(false)}
-        onUnlock={handleUnlockSuccess}
-        authUserEmail={authUser?.email || null}
-      />
+        {passcodeModalOpen && (
+          <ManagementPasscodeModal
+            open={passcodeModalOpen}
+            onClose={() => setPasscodeModalOpen(false)}
+            onUnlock={handleUnlockSuccess}
+            authUserEmail={authUser?.email || null}
+          />
+        )}
+      </Suspense>
     </div>
   );
 }
