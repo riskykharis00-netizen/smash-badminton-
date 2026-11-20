@@ -1,5 +1,6 @@
 import { Eye, EyeOff, Lock, X } from 'lucide-react';
 import { useState, type FormEvent } from 'react';
+import { UnauthorizedDomainNotice } from './UnauthorizedDomainNotice';
 
 interface ManagementPasscodeModalProps {
   open: boolean;
@@ -121,11 +122,7 @@ export function ManagementPasscodeModal({
             </div>
           </div>
 
-          {error && (
-            <p role="alert" className="rounded-lg bg-rose-50 px-3 py-2 text-xs font-medium text-rose-700">
-              {error}
-            </p>
-          )}
+          {error && <UnauthorizedDomainNotice errorMessage={error} />}
 
           <div className="flex items-center justify-end gap-2.5 pt-1">
             <button

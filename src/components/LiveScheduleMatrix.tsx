@@ -19,6 +19,7 @@ import {
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import type { ConnectionStatus, CreateBookingInput } from '../hooks/useArenaRealtime';
 import { extractReadableError } from '../lib/firebase';
+import { UnauthorizedDomainNotice } from './UnauthorizedDomainNotice';
 import {
   ADDON_CATALOG,
   OPERATING_HOURS,
@@ -749,14 +750,7 @@ export function LiveScheduleMatrix({
                   </div>
                 </div>
 
-                {formError && (
-                  <p
-                    role="alert"
-                    className="rounded-lg bg-rose-50 px-3 py-2.5 text-xs font-medium text-rose-700"
-                  >
-                    {formError}
-                  </p>
-                )}
+                {formError && <UnauthorizedDomainNotice errorMessage={formError} />}
 
                 <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs">
                   {authUserEmail ? (

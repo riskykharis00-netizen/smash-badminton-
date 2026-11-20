@@ -17,6 +17,7 @@ import { buildDefaultCourts } from '../data/defaultArenaData';
 import {
   ADMIN_EMAIL,
   OperationType,
+  UNAUTHORIZED_DOMAIN_ERROR_CODE,
   auth,
   db,
   googleProvider,
@@ -156,8 +157,9 @@ export function useArenaRealtime() {
         throw new Error('Masuk Google dibatalkan. Silakan coba lagi untuk melanjutkan.');
       }
       if (code === 'auth/unauthorized-domain') {
+        const host = typeof window !== 'undefined' ? window.location.hostname : '';
         throw new Error(
-          'Domain ini belum diizinkan di Firebase Authentication -> Authorized domains.'
+          `${UNAUTHORIZED_DOMAIN_ERROR_CODE}: Domain "${host}" belum diizinkan di Firebase Authentication -> Authorized domains.`
         );
       }
       throw new Error('Gagal masuk dengan akun Google. Periksa koneksi atau izinkan pop-up browser.');

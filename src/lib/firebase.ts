@@ -10,6 +10,9 @@ export const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({ prompt: 'select_account' });
 
 export const ADMIN_EMAIL = 'riskykharis00@gmail.com';
+export const FIREBASE_PROJECT_ID = firebaseConfig.projectId;
+export const FIREBASE_AUTH_SETTINGS_URL = `https://console.firebase.google.com/project/${firebaseConfig.projectId}/authentication/settings`;
+export const UNAUTHORIZED_DOMAIN_ERROR_CODE = 'AUTH_UNAUTHORIZED_DOMAIN';
 
 export function isAdminEmail(email?: string | null): boolean {
   return typeof email === 'string' && email.trim().toLowerCase() === ADMIN_EMAIL;
